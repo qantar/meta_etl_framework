@@ -1,0 +1,5 @@
+-- Extract from init_metadata_tables():
+-- CREATE TABLE etl_connections (...);
+-- CREATE TABLE etl_jobs (...);
+-- CREATE TABLE etl_job_executions (...);
+-- CREATE TABLE etl_data_quality (...);

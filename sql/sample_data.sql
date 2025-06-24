@@ -1,0 +1,3 @@
+-- Extract from setup_sample_data():
+-- INSERT INTO etl_connections (...);
+-- INSERT INTO etl_jobs (...);

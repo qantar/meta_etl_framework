@@ -1,0 +1,6 @@
+// Extract transformation_rules from job configs:
+// {
+//     "cleaning_rules": [...],
+//     "business_rules": [...],
+//     "aggregations": [...]
+//   }

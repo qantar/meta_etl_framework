@@ -1,0 +1,8 @@
+# Extract from main() function:
+# metadata_connection_string: "postgresql://..."
+# bronze_path: "/delta/bronze"
+# silver_path: "/delta/silver"
+# gold_path: "/delta/gold"
+# spark_configs:
+#   - spark.sql.extensions: "io.delta.sql.DeltaSparkSessionExtension"
+#   - spark.sql.catalog.spark_catalog: "org.apache.spark.sql.delta.catalog.DeltaCatalog"

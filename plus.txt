@@ -1,0 +1,827 @@
+"""
+Infrastructure Components for ETL Framework
+Handles Spark session management, Kubernetes deployment, and cloud resources
+"""
+
+import os
+import yaml
+import json
+import logging
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass
+from kubernetes import client, config as k8s_config
+from kubernetes.client.rest import ApiException
+import boto3
+from azure.identity import DefaultAzureCredential
+from azure.storage.blob import BlobServiceClient
+
+
+@dataclass
+class SparkConfig:
+    """Spark configuration settings"""
+    app_name: str
+    master: str = "local[*]"
+    executor_memory: str = "2g"
+    executor_cores: int = 2
+    driver_memory: str = "1g"
+    max_result_size: str = "1g"
+    adaptive_enabled: bool = True
+    dynamic_allocation: bool = True
+    additional_configs: Dict[str, str] = None
+
+
+@dataclass
+class K8sConfig:
+    """Kubernetes deployment configuration"""
+    namespace: str = "etl-framework"
+    image: str = "etl-framework:latest"
+    cpu_request: str = "500m"
+    cpu_limit: str = "2000m"
+    memory_request: str = "1Gi"
+    memory_limit: str = "4Gi"
+    replicas: int = 1
+    service_account: str = "etl-framework-sa"
+
+
+@dataclass
+class CloudConfig:
+    """Cloud provider configuration"""
+    provider: str  # aws, azure, gcp
+    region: str = "us-east-1"
+    storage_bucket: str = None
+    credentials_path: str = None
+    additional_settings: Dict[str, Any] = None
+
+
+class SparkSessionManager:
+    """Manages Spark session lifecycle and configuration"""
+    
+    def __init__(self, config: SparkConfig):
+        self.config = config
+        self.spark_session = None
+        self.logger = logging.getLogger(__name__)
+    
+    def create_spark_session(self):
+        """Create optimized Spark session based on configuration"""
+        
+        try:
+            from pyspark.sql import SparkSession
+            import delta
+            
+            builder = SparkSession.builder \
+                .appName(self.config.app_name) \
+                .master(self.config.master) \
+                .config("spark.executor.memory", self.config.executor_memory) \
+                .config("spark.executor.cores", str(self.config.executor_cores)) \
+                .config("spark.driver.memory", self.config.driver_memory) \
+                .config("spark.driver.maxResultSize", self.config.max_result_size) \
+                .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
+                .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+            
+            # Adaptive Query Execution
+            if self.config.adaptive_enabled:
+                builder = builder.config("spark.sql.adaptive.enabled", "true") \
+                                .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+                                .config("spark.sql.adaptive.skewJoin.enabled", "true")
+            
+            # Dynamic allocation
+            if self.config.dynamic_allocation:
+                builder = builder.config("spark.dynamicAllocation.enabled", "true") \
+                                .config("spark.dynamicAllocation.minExecutors", "1") \
+                                .config("spark.dynamicAllocation.maxExecutors", "10") \
+                                .config("spark.dynamicAllocation.initialExecutors", "2")
+            
+            # Additional custom configurations
+            if self.config.additional_configs:
+                for key, value in self.config.additional_configs.items():
+                    builder = builder.config(key, value)
+            
+            self.spark_session = builder.getOrCreate()
+            self.spark_session.sparkContext.setLogLevel("WARN")
+            
+            self.logger.info(f"Spark session created: {self.config.app_name}")
+            return self.spark_session
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create Spark session: {str(e)}")
+            raise
+    
+    def get_session(self):
+        """Get existing Spark session or create new one"""
+        if self.spark_session is None:
+            return self.create_spark_session()
+        return self.spark_session
+    
+    def stop_session(self):
+        """Stop Spark session and clean up resources"""
+        if self.spark_session:
+            self.spark_session.stop()
+            self.spark_session = None
+            self.logger.info("Spark session stopped")
+    
+    def optimize_for_data_size(self, data_size_gb: float):
+        """Dynamically adjust Spark configuration based on data size"""
+        
+        if data_size_gb < 1:  # Small data
+            self.config.executor_memory = "1g"
+            self.config.executor_cores = 1
+            self.config.driver_memory = "512m"
+        elif data_size_gb < 10:  # Medium data
+            self.config.executor_memory = "2g"
+            self.config.executor_cores = 2
+            self.config.driver_memory = "1g"
+        elif data_size_gb < 100:  # Large data
+            self.config.executor_memory = "4g"
+            self.config.executor_cores = 4
+            self.config.driver_memory = "2g"
+        else:  # Very large data
+            self.config.executor_memory = "8g"
+            self.config.executor_cores = 8
+            self.config.driver_memory = "4g"
+            
+        self.logger.info(f"Spark config optimized for {data_size_gb}GB data")
+
+
+class KubernetesManager:
+    """Manages Kubernetes deployments for ETL pipelines"""
+    
+    def __init__(self, k8s_config: K8sConfig):
+        self.config = k8s_config
+        self.logger = logging.getLogger(__name__)
+        
+        # Load Kubernetes configuration
+        try:
+            k8s_config.load_incluster_config()  # For in-cluster execution
+        except:
+            k8s_config.load_kube_config()  # For local development
+        
+        self.apps_v1 = client.AppsV1Api()
+        self.core_v1 = client.CoreV1Api()
+        self.batch_v1 = client.BatchV1Api()
+    
+    def create_job_manifest(self, pipeline_name: str, config_path: str) -> Dict:
+        """Create Kubernetes Job manifest for ETL pipeline"""
+        
+        job_manifest = {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {
+                "name": f"etl-{pipeline_name}",
+                "namespace": self.config.namespace,
+                "labels": {
+                    "app": "etl-framework",
+                    "pipeline": pipeline_name
+                }
+            },
+            "spec": {
+                "template": {
+                    "spec": {
+                        "serviceAccountName": self.config.service_account,
+                        "containers": [{
+                            "name": "etl-runner",
+                            "image": self.config.image,
+                            "command": ["python", "-m", "src.main"],
+                            "args": ["--config", config_path, "--pipeline", pipeline_name],
+                            "resources": {
+                                "requests": {
+                                    "cpu": self.config.cpu_request,
+                                    "memory": self.config.memory_request
+                                },
+                                "limits": {
+                                    "cpu": self.config.cpu_limit,
+                                    "memory": self.config.memory_limit
+                                }
+                            },
+                            "env": [
+                                {"name": "SPARK_MASTER", "value": "k8s://https://kubernetes.default.svc:443"},
+                                {"name": "PIPELINE_NAME", "value": pipeline_name}
+                            ],
+                            "volumeMounts": [{
+                                "name": "config-volume",
+                                "mountPath": "/app/config"
+                            }]
+                        }],
+                        "volumes": [{
+                            "name": "config-volume",
+                            "configMap": {
+                                "name": f"etl-config-{pipeline_name}"
+                            }
+                        }],
+                        "restartPolicy": "Never"
+                    }
+                },
+                "backoffLimit": 3
+            }
+        }
+        
+        return job_manifest
+    
+    def deploy_pipeline(self, pipeline_name: str, config_path: str) -> str:
+        """Deploy ETL pipeline as Kubernetes Job"""
+        
+        try:
+            # Create ConfigMap for pipeline configuration
+            self._create_config_map(pipeline_name, config_path)
+            
+            # Create Job manifest
+            job_manifest = self.create_job_manifest(pipeline_name, config_path)
+            
+            # Deploy Job
+            response = self.batch_v1.create_namespaced_job(
+                namespace=self.config.namespace,
+                body=job_manifest
+            )
+            
+            job_name = response.metadata.name
+            self.logger.info(f"Pipeline {pipeline_name} deployed as Job: {job_name}")
+            
+            return job_name
+            
+        except ApiException as e:
+            self.logger.error(f"Failed to deploy pipeline {pipeline_name}: {e}")
+            raise
+    
+    def _create_config_map(self, pipeline_name: str, config_path: str):
+        """Create ConfigMap for pipeline configuration"""
+        
+        with open(config_path, 'r') as f:
+            config_data = f.read()
+        
+        config_map = client.V1ConfigMap(
+            metadata=client.V1ObjectMeta(
+                name=f"etl-config-{pipeline_name}",
+                namespace=self.config.namespace
+            ),
+            data={
+                "pipeline.yaml": config_data
+            }
+        )
+        
+        try:
+            self.core_v1.create_namespaced_config_map(
+                namespace=self.config.namespace,
+                body=config_map
+            )
+        except ApiException as e:
+            if e.status != 409:  # Ignore if already exists
+                raise
+    
+    def get_job_status(self, job_name: str) -> Dict:
+        """Get status of deployed ETL job"""
+        
+        try:
+            response = self.batch_v1.read_namespaced_job(
+                name=job_name,
+                namespace=self.config.namespace
+            )
+            
+            status = {
+                "name": job_name,
+                "active": response.status.active or 0,
+                "succeeded": response.status.succeeded or 0,
+                "failed": response.status.failed or 0,
+                "start_time": response.status.start_time,
+                "completion_time": response.status.completion_time
+            }
+            
+            return status
+            
+        except ApiException as e:
+            self.logger.error(f"Failed to get job status for {job_name}: {e}")
+            raise
+    
+    def scale_deployment(self, deployment_name: str, replicas: int):
+        """Scale deployment based on workload"""
+        
+        try:
+            # Get current deployment
+            deployment = self.apps_v1.read_namespaced_deployment(
+                name=deployment_name,
+                namespace=self.config.namespace
+            )
+            
+            # Update replica count
+            deployment.spec.replicas = replicas
+            
+            # Apply changes
+            self.apps_v1.patch_namespaced_deployment(
+                name=deployment_name,
+                namespace=self.config.namespace,
+                body=deployment
+            )
+            
+            self.logger.info(f"Scaled {deployment_name} to {replicas} replicas")
+            
+        except ApiException as e:
+            self.logger.error(f"Failed to scale deployment {deployment_name}: {e}")
+            raise
+
+
+class CloudResourceManager:
+    """Manages cloud resources across different providers"""
+    
+    def __init__(self, cloud_config: CloudConfig):
+        self.config = cloud_config
+        self.logger = logging.getLogger(__name__)
+        self._initialize_client()
+    
+    def _initialize_client(self):
+        """Initialize cloud provider client"""
+        
+        if self.config.provider.lower() == "aws":
+            self.client = boto3.client('s3', region_name=self.config.region)
+            self.s3_resource = boto3.resource('s3', region_name=self.config.region)
+            
+        elif self.config.provider.lower() == "azure":
+            credential = DefaultAzureCredential()
+            self.client = BlobServiceClient(
+                account_url=f"https://{self.config.storage_bucket}.blob.core.windows.net",
+                credential=credential
+            )
+            
+        elif self.config.provider.lower() == "gcp":
+            from google.cloud import storage
+            self.client = storage.Client()
+            
+        else:
+            raise ValueError(f"Unsupported cloud provider: {self.config.provider}")
+    
+    def create_data_lake_structure(self, pipeline_name: str):
+        """Create standardized data lake folder structure"""
+        
+        folders = [
+            f"bronze/{pipeline_name}/",
+            f"silver/{pipeline_name}/",
+            f"gold/{pipeline_name}/",
+            f"config/{pipeline_name}/",
+            f"logs/{pipeline_name}/"
+        ]
+        
+        if self.config.provider.lower() == "aws":
+            for folder in folders:
+                self.client.put_object(
+                    Bucket=self.config.storage_bucket,
+                    Key=folder,
+                    Body=''
+                )
+        
+        elif self.config.provider.lower() == "azure":
+            container_client = self.client.get_container_client(self.config.storage_bucket)
+            for folder in folders:
+                container_client.upload_blob(
+                    name=folder + ".placeholder",
+                    data="",
+                    overwrite=True
+                )
+        
+        self.logger.info(f"Created data lake structure for {pipeline_name}")
+    
+    def estimate_processing_cost(self, data_size_gb: float, processing_hours: float) -> Dict:
+        """Estimate cloud processing costs"""
+        
+        cost_per_gb_hour = {
+            "aws": 0.10,
+            "azure": 0.12,
+            "gcp": 0.09
+        }
+        
+        base_cost = cost_per_gb_hour.get(self.config.provider.lower(), 0.10)
+        estimated_cost = data_size_gb * processing_hours * base_cost
+        
+        return {
+            "provider": self.config.provider,
+            "data_size_gb": data_size_gb,
+            "processing_hours": processing_hours,
+            "estimated_cost_usd": round(estimated_cost, 2),
+            "cost_breakdown": {
+                "compute": round(estimated_cost * 0.7, 2),
+                "storage": round(estimated_cost * 0.2, 2),
+                "network": round(estimated_cost * 0.1, 2)
+            }
+        }
+    
+    def optimize_storage_class(self, file_path: str, access_frequency: str):
+        """Optimize storage class based on access patterns"""
+        
+        storage_classes = {
+            "frequent": "STANDARD",
+            "infrequent": "STANDARD_IA",
+            "archive": "GLACIER"
+        }
+        
+        if self.config.provider.lower() == "aws":
+            storage_class = storage_classes.get(access_frequency, "STANDARD")
+            
+            self.client.copy_object(
+                Bucket=self.config.storage_bucket,
+                Key=file_path,
+                CopySource={'Bucket': self.config.storage_bucket, 'Key': file_path},
+                StorageClass=storage_class
+            )
+            
+        self.logger.info(f"Optimized storage class for {file_path}: {access_frequency}")
+
+
+class InfrastructureOrchestrator:
+    """Orchestrates all infrastructure components"""
+    
+    def __init__(self, spark_config: SparkConfig, k8s_config: K8sConfig, cloud_config: CloudConfig):
+        self.spark_manager = SparkSessionManager(spark_config)
+        self.k8s_manager = KubernetesManager(k8s_config)
+        self.cloud_manager = CloudResourceManager(cloud_config)
+        self.logger = logging.getLogger(__name__)
+    
+    def deploy_complete_pipeline(self, pipeline_name: str, config_path: str, data_size_gb: float = 1.0):
+        """Deploy complete ETL pipeline with optimized infrastructure"""
+        
+        try:
+            # 1. Optimize Spark configuration for data size
+            self.spark_manager.optimize_for_data_size(data_size_gb)
+            
+            # 2. Create cloud data lake structure
+            self.cloud_manager.create_data_lake_structure(pipeline_name)
+            
+            # 3. Estimate processing costs
+            cost_estimate = self.cloud_manager.estimate_processing_cost(data_size_gb, 2.0)
+            self.logger.info(f"Estimated cost for {pipeline_name}: ${cost_estimate['estimated_cost_usd']}")
+            
+            # 4. Deploy to Kubernetes
+            job_name = self.k8s_manager.deploy_pipeline(pipeline_name, config_path)
+            
+            # 5. Monitor deployment
+            deployment_info = {
+                "pipeline_name": pipeline_name,
+                "job_name": job_name,
+                "data_size_gb": data_size_gb,
+                "cost_estimate": cost_estimate,
+                "spark_config": {
+                    "executor_memory": self.spark_manager.config.executor_memory,
+                    "executor_cores": self.spark_manager.config.executor_cores
+                }
+            }
+            
+            self.logger.info(f"Pipeline {pipeline_name} deployed successfully")
+            return deployment_info
+            
+        except Exception as e:
+            self.logger.error(f"Failed to deploy pipeline {pipeline_name}: {str(e)}")
+            raise
+    
+    def cleanup_pipeline(self, pipeline_name: str):
+        """Clean up all resources for a pipeline"""
+        
+        try:
+            # Stop Spark session
+            self.spark_manager.stop_session()
+            
+            # Delete Kubernetes job (implementation depends on requirements)
+            # self.k8s_manager.delete_job(f"etl-{pipeline_name}")
+            
+            self.logger.info(f"Cleaned up resources for {pipeline_name}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to cleanup pipeline {pipeline_name}: {str(e)}")
+
+
+# Factory function for easy initialization
+def create_infrastructure_manager(config_file: str) -> InfrastructureOrchestrator:
+    """Factory function to create infrastructure manager from config file"""
+    
+    with open(config_file, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    spark_config = SparkConfig(**config.get('spark', {}))
+    k8s_config = K8sConfig(**config.get('kubernetes', {}))
+    cloud_config = CloudConfig(**config.get('cloud', {}))
+    
+    return InfrastructureOrchestrator(spark_config, k8s_config, cloud_config)
+
+
+# Example usage
+if __name__ == "__main__":
+    # Example infrastructure configuration
+    infra_config = {
+        'spark': {
+            'app_name': 'customer_pipeline',
+            'executor_memory': '4g',
+            'executor_cores': 4
+        },
+        'kubernetes': {
+            'namespace': 'etl-prod',
+            'image': 'mycompany/etl-framework:v1.0',
+            'cpu_limit': '4000m',
+            'memory_limit': '8Gi'
+        },
+        'cloud': {
+            'provider': 'aws',
+            'region': 'us-east-1',
+            'storage_bucket': 'company-data-lake'
+        }
+    }
+    
+    # Save config and create infrastructure manager
+    with open('/tmp/infra_config.yaml', 'w') as f:
+        yaml.dump(infra_config, f)
+    
+    infra_manager = create_infrastructure_manager('/tmp/infra_config.yaml')
+    
+    # Deploy pipeline
+    deployment_info = infra_manager.deploy_complete_pipeline(
+        "customer_segmentation", 
+        "/app/config/customer_pipeline.yaml", 
+        data_size_gb=5.0
+    )
+    
+    print(f"Deployment info: {deployment_info}")
+
+*************************************************************************************
+**************************************************************************************
+
+"""
+Framework Migration System
+Handles version upgrades, schema evolution, and backward compatibility
+"""
+
+import os
+import json
+import logging
+import psycopg2
+import semantic_version
+from datetime import datetime
+from typing import Dict, List, Optional, Callable
+from dataclasses import dataclass
+from abc import ABC, abstractmethod
+
+
+@dataclass
+class MigrationInfo:
+    """Migration metadata"""
+    version: str
+    description: str
+    migration_type: str  # schema, config, data
+    rollback_supported: bool = True
+    breaking_change: bool = False
+    dependencies: List[str] = None
+
+
+class BaseMigration(ABC):
+    """Base class for all migrations"""
+    
+    def __init__(self, migration_info: MigrationInfo):
+        self.info = migration_info
+        self.logger = logging.getLogger(__name__)
+    
+    @abstractmethod
+    def upgrade(self, connection) -> bool:
+        """Execute upgrade migration"""
+        pass
+    
+    @abstractmethod
+    def rollback(self, connection) -> bool:
+        """Execute rollback migration"""
+        pass
+    
+    def validate_prerequisites(self, connection) -> bool:
+        """Validate migration prerequisites"""
+        return True
+    
+    def post_migration_verification(self, connection) -> bool:
+        """Verify migration completed successfully"""
+        return True
+
+
+class SchemaMigration(BaseMigration):
+    """Database schema migrations"""
+    
+    def __init__(self, migration_info: MigrationInfo, upgrade_sql: str, rollback_sql: str = None):
+        super().__init__(migration_info)
+        self.upgrade_sql = upgrade_sql
+        self.rollback_sql = rollback_sql
+    
+    def upgrade(self, connection) -> bool:
+        """Execute schema upgrade"""
+        try:
+            with connection.cursor() as cursor:
+                # Execute upgrade SQL
+                for statement in self.upgrade_sql.split(';'):
+                    if statement.strip():
+                        cursor.execute(statement.strip())
+                
+                connection.commit()
+                self.logger.info(f"Schema migration {self.info.version} completed")
+                return True
+                
+        except Exception as e:
+            connection.rollback()
+            self.logger.error(f"Schema migration {self.info.version} failed: {str(e)}")
+            return False
+    
+    def rollback(self, connection) -> bool:
+        """Execute schema rollback"""
+        if not self.rollback_sql:
+            self.logger.warning(f"No rollback available for migration {self.info.version}")
+            return False
+        
+        try:
+            with connection.cursor() as cursor:
+                for statement in self.rollback_sql.split(';'):
+                    if statement.strip():
+                        cursor.execute(statement.strip())
+                
+                connection.commit()
+                self.logger.info(f"Schema rollback {self.info.version} completed")
+                return True
+                
+        except Exception as e:
+            connection.rollback()
+            self.logger.error(f"Schema rollback {self.info.version} failed: {str(e)}")
+            return False
+
+
+class ConfigMigration(BaseMigration):
+    """Configuration file migrations"""
+    
+    def __init__(self, migration_info: MigrationInfo, transform_function: Callable):
+        super().__init__(migration_info)
+        self.transform_function = transform_function
+    
+    def upgrade(self, connection) -> bool:
+        """Execute config upgrade"""
+        try:
+            # Get all config files that need migration
+            config_files = self._get_config_files()
+            
+            for config_file in config_files:
+                self._migrate_config_file(config_file)
+            
+            self.logger.info(f"Config migration {self.info.version} completed")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Config migration {self.info.version} failed: {str(e)}")
+            return False
+    
+    def rollback(self, connection) -> bool:
+        """Execute config rollback"""
+        # Implementation depends on backup strategy
+        self.logger.warning(f"Config rollback for {self.info.version} not implemented")
+        return False
+    
+    def _get_config_files(self) -> List[str]:
+        """Get list of config files to migrate"""
+        config_files = []
+        config_dir = "config/"
+        
+        for root, dirs, files in os.walk(config_dir):
+            for file in files:
+                if file.endswith(('.yaml', '.yml', '.json')):
+                    config_files.append(os.path.join(root, file))
+        
+        return config_files
+    
+    def _migrate_config_file(self, file_path: str):
+        """Migrate individual config file"""
+        # Create backup
+        backup_path = f"{file_path}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        os.rename(file_path, backup_path)
+        
+        # Transform config
+        with open(backup_path, 'r') as f:
+            old_config = json.load(f) if file_path.endswith('.json') else yaml.safe_load(f)
+        
+        new_config = self.transform_function(old_config)
+        
+        # Write new config
+        with open(file_path, 'w') as f:
+            if file_path.endswith('.json'):
+                json.dump(new_config, f, indent=2)
+            else:
+                yaml.dump(new_config, f, default_flow_style=False)
+
+
+class DataMigration(BaseMigration):
+    """Data transformation migrations"""
+    
+    def __init__(self, migration_info: MigrationInfo, transform_queries: List[str]):
+        super().__init__(migration_info)
+        self.transform_queries = transform_queries
+    
+    def upgrade(self, connection) -> bool:
+        """Execute data transformation"""
+        try:
+            with connection.cursor() as cursor:
+                for query in self.transform_queries:
+                    cursor.execute(query)
+                    affected_rows = cursor.rowcount
+                    self.logger.info(f"Data migration query affected {affected_rows} rows")
+                
+                connection.commit()
+                self.logger.info(f"Data migration {self.info.version} completed")
+                return True
+                
+        except Exception as e:
+            connection.rollback()
+            self.logger.error(f"Data migration {self.info.version} failed: {str(e)}")
+            return False
+    
+    def rollback(self, connection) -> bool:
+        """Data rollback typically requires restore from backup"""
+        self.logger.warning(f"Data rollback for {self.info.version} requires manual intervention")
+        return False
+
+
+class MigrationManager:
+    """Manages framework migrations and versioning"""
+    
+    def __init__(self, connection_string: str):
+        self.connection_string = connection_string
+        self.migrations: Dict[str, BaseMigration] = {}
+        self.logger = logging.getLogger(__name__)
+        self._init_migration_table()
+    
+    def get_connection(self):
+        return psycopg2.connect(self.connection_string)
+    
+    def _init_migration_table(self):
+        """Initialize migration tracking table"""
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS framework_migrations (
+            migration_id SERIAL PRIMARY KEY,
+            version VARCHAR(50) UNIQUE NOT NULL,
+            description TEXT,
+            migration_type VARCHAR(20),
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            rollback_available BOOLEAN DEFAULT false,
+            breaking_change BOOLEAN DEFAULT false,
+            execution_time_ms INTEGER,
+            status VARCHAR(20) DEFAULT 'applied'
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_migrations_version ON framework_migrations(version);
+        CREATE INDEX IF NOT EXISTS idx_migrations_status ON framework_migrations(status);
+        """
+        
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(create_table_sql)
+                conn.commit()
+    
+    def register_migration(self, migration: BaseMigration):
+        """Register a migration"""
+        self.migrations[migration.info.version] = migration
+        self.logger.info(f"Registered migration: {migration.info.version}")
+    
+    def get_current_version(self) -> str:
+        """Get current framework version"""
+        query = "SELECT version FROM framework_migrations ORDER BY applied_at DESC LIMIT 1"
+        
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(query)
+                result = cursor.fetchone()
+                return result[0] if result else "0.0.0"
+    
+    def get_pending_migrations(self, target_version: str = None) -> List[BaseMigration]:
+        """Get list of pending migrations"""
+        current_version = semantic_version.Version(self.get_current_version())
+        
+        pending = []
+        for version_str, migration in self.migrations.items():
+            migration_version = semantic_version.Version(version_str)
+            
+            if migration_version > current_version:
+                if target_version is None or migration_version <= semantic_version.Version(target_version):
+                    pending.append(migration)
+        
+        # Sort by version
+        pending.sort(key=lambda m: semantic_version.Version(m.info.version))
+        return pending
+    
+    def migrate_to_version(self, target_version: str) -> bool:
+        """Migrate to specific version"""
+        current_version = self.get_current_version()
+        self.logger.info(f"Migrating from {current_version} to {target_version}")
+        
+        pending_migrations = self.get_pending_migrations(target_version)
+        
+        if not pending_migrations:
+            self.logger.info("No migrations to apply")
+            return True
+        
+        # Check for breaking changes
+        breaking_changes = [m for m in pending_migrations if m.info.breaking_change]
+        if breaking_changes:
+            self.logger.warning(f"Breaking changes detected in migrations: {[m.info.version for m in breaking_changes]}")
+        
+        success_count = 0
+        total_migrations = len(pending_migrations)
+        
+        for migration in pending_migrations:
+            if self._execute_migration(migration):
+                success_count += 1
+            else:
+                self.logger.error(f"Migration failed at version {migration.info.version}")
+                break
+        
+        final_version = self.get_current_version()
+        self.logger.info(f
