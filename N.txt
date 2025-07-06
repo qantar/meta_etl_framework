@@ -1,0 +1,202 @@
+# ==========================================
+# ETL Framework - Production Requirements
+# ==========================================
+
+# Core Framework
+pandas>=2.0.0,<3.0.0
+numpy>=1.24.0,<2.0.0
+sqlalchemy>=2.0.0,<3.0.0
+psycopg2-binary>=2.9.0,<3.0.0
+pyspark>=3.5.0,<4.0.0
+delta-spark>=2.4.0,<3.0.0
+
+# Data Quality & Validation
+great-expectations>=0.17.0,<1.0.0
+validators>=0.20.0,<1.0.0
+phonenumbers>=8.13.0,<9.0.0
+email-validator>=2.0.0,<3.0.0
+
+# Configuration & Secrets
+pyyaml>=6.0,<7.0
+python-dotenv>=1.0.0,<2.0.0
+keyring>=24.0.0,<25.0.0
+cryptography>=41.0.0,<42.0.0
+
+# Scheduling & Orchestration
+croniter>=1.4.0,<2.0.0
+networkx>=3.0,<4.0
+asyncio-mqtt>=0.13.0,<1.0.0
+
+# Notifications
+requests>=2.31.0,<3.0.0
+aiohttp>=3.8.0,<4.0.0
+jinja2>=3.1.0,<4.0.0
+slack-sdk>=3.21.0,<4.0.0
+
+# CLI & User Interface
+click>=8.1.0,<9.0.0
+rich>=13.0.0,<14.0.0
+tabulate>=0.9.0,<1.0.0
+colorama>=0.4.6,<1.0.0
+prompt-toolkit>=3.0.0,<4.0.0
+
+# Monitoring & Logging
+prometheus-client>=0.17.0,<1.0.0
+structlog>=23.0.0,<24.0.0
+loguru>=0.7.0,<1.0.0
+
+# File Processing & Storage
+boto3>=1.28.0,<2.0.0  # AWS S3
+azure-storage-blob>=12.17.0,<13.0.0  # Azure Blob Storage
+google-cloud-storage>=2.10.0,<3.0.0  # Google Cloud Storage
+minio>=7.1.0,<8.0.0  # MinIO client
+openpyxl>=3.1.0,<4.0.0  # Excel files
+pyarrow>=12.0.0,<13.0.0  # Parquet files
+
+# Database Drivers
+pymongo>=4.4.0,<5.0.0  # MongoDB
+redis>=4.6.0,<5.0.0  # Redis
+cassandra-driver>=3.28.0,<4.0.0  # Cassandra
+mysql-connector-python>=8.1.0,<9.0.0  # MySQL
+cx-Oracle>=8.3.0,<9.0.0  # Oracle
+
+# Data Processing & Analysis
+scipy>=1.11.0,<2.0.0
+scikit-learn>=1.3.0,<2.0.0
+matplotlib>=3.7.0,<4.0.0
+seaborn>=0.12.0,<1.0.0
+plotly>=5.15.0,<6.0.0
+
+# API & Web Framework
+fastapi>=0.101.0,<1.0.0
+uvicorn[standard]>=0.23.0,<1.0.0
+starlette>=0.27.0,<1.0.0
+
+# Testing & Development (optional)
+pytest>=7.4.0,<8.0.0
+pytest-cov>=4.1.0,<5.0.0
+pytest-asyncio>=0.21.0,<1.0.0
+pytest-mock>=3.11.0,<4.0.0
+black>=23.7.0,<24.0.0
+flake8>=6.0.0,<7.0.0
+mypy>=1.5.0,<2.0.0
+isort>=5.12.0,<6.0.0
+pre-commit>=3.3.0,<4.0.0
+
+# Documentation
+sphinx>=7.1.0,<8.0.0
+sphinx-rtd-theme>=1.3.0,<2.0.0
+mkdocs>=1.5.0,<2.0.0
+mkdocs-material>=9.1.0,<10.0.0
+
+# Jupyter & Interactive Development
+jupyter>=1.0.0,<2.0.0
+jupyterlab>=4.0.0,<5.0.0
+ipywidgets>=8.0.0,<9.0.0
+notebook>=7.0.0,<8.0.0
+
+# Performance & Optimization
+numba>=0.57.0,<1.0.0
+dask[complete]>=2023.7.0,<2024.0.0
+ray[default]>=2.6.0,<3.0.0
+
+# Kubernetes Integration (optional)
+kubernetes>=27.2.0,<28.0.0
+kopf>=1.36.0,<2.0.0
+
+# Message Queues (optional)
+celery>=5.3.0,<6.0.0
+kombu>=5.3.0,<6.0.0
+pika>=1.3.0,<2.0.0  # RabbitMQ
+
+# Backup & Archival
+paramiko>=3.2.0,<4.0.0  # SSH/SFTP
+ftplib>=3.11,<4.0  # Built-in, but specified for clarity
+tarfile>=3.11,<4.0  # Built-in
+zipfile>=3.11,<4.0  # Built-in
+
+# Security & Authentication
+passlib[bcrypt]>=1.7.0,<2.0.0
+python-jose[cryptography]>=3.3.0,<4.0.0
+python-multipart>=0.0.6,<1.0.0
+
+# Utilities
+python-dateutil>=2.8.0,<3.0.0
+pytz>=2023.3,<2024.0
+tqdm>=4.65.0,<5.0.0
+humanize>=4.7.0,<5.0.0
+psutil>=5.9.0,<6.0.0
+jsonschema>=4.18.0,<5.0.0
+
+# Data Formats & Serialization
+avro>=1.11.0,<2.0.0
+fastavro>=1.8.0,<2.0.0
+msgpack>=1.0.0,<2.0.0
+protobuf>=4.23.0,<5.0.0
+
+# Cloud & Infrastructure
+apache-airflow>=2.6.0,<3.0.0  # Optional workflow orchestration
+prefect>=2.11.0,<3.0.0  # Alternative orchestration
+terraform>=1.5.0,<2.0.0  # Infrastructure as code
+
+# Version Control & Git
+gitpython>=3.1.0,<4.0.0
+dulwich>=0.21.0,<1.0.0
+
+# Time Series & Financial Data
+pandas-datareader>=0.10.0,<1.0.0
+yfinance>=0.2.0,<1.0.0
+ta-lib>=0.4.0,<1.0.0  # Technical analysis
+
+# Machine Learning Integration (optional)
+mlflow>=2.5.0,<3.0.0
+wandb>=0.15.0,<1.0.0
+tensorboard>=2.13.0,<3.0.0
+
+# Development Tools
+watchdog>=3.0.0,<4.0.0  # File system events
+memory-profiler>=0.61.0,<1.0.0
+line-profiler>=4.0.0,<5.0.0
+
+# Additional Database Support
+snowflake-connector-python>=3.1.0,<4.0.0
+databricks-sql-connector>=2.7.0,<3.0.0
+duckdb>=0.8.0,<1.0.0
+clickhouse-driver>=0.2.0,<1.0.0
+
+# Stream Processing
+kafka-python>=2.0.0,<3.0.0
+confluent-kafka>=2.2.0,<3.0.0
+apache-beam[gcp]>=2.49.0,<3.0.0
+
+# Geospatial Data (optional)
+geopandas>=0.13.0,<1.0.0
+shapely>=2.0.0,<3.0.0
+folium>=0.14.0,<1.0.0
+
+# Image Processing (optional)
+pillow>=10.0.0,<11.0.0
+opencv-python>=4.8.0,<5.0.0
+
+# Natural Language Processing (optional)
+nltk>=3.8.0,<4.0.0
+spacy>=3.6.0,<4.0.0
+textblob>=0.17.0,<1.0.0
+
+# Financial & Business Intelligence
+openpyxl>=3.1.0,<4.0.0
+xlsxwriter>=3.1.0,<4.0.0
+reportlab>=4.0.0,<5.0.0
+
+# Caching & Performance
+redis-py-cluster>=2.1.0,<3.0.0
+memcached>=1.59,<2.0.0
+diskcache>=5.6.0,<6.0.0
+
+# API Documentation
+swagger-ui-bundle>=0.0.9,<1.0.0
+redoc>=2.0.0,<3.0.0
+
+# Environment & Configuration Management
+python-decouple>=3.8,<4.0
+envparse>=0.2.0,<1.0.0

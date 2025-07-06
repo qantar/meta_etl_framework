@@ -1,0 +1,399 @@
+# ==========================================
+# ETL Framework - Production Configuration
+# ==========================================
+
+# Pipeline Information
+pipeline_name: "production_etl_pipeline"
+description: "Production ETL Pipeline with Multi-Engine Support"
+version: "1.0.0"
+environment: "production"
+
+# Engine Configuration
+enabled_engines:
+  - "python"
+  - "pyspark"
+  - "sql"
+default_engine: "pyspark"
+auto_discovery: true
+schema_patterns:
+  - "public"
+  - "sales"
+  - "analytics"
+  - "finance"
+
+# Database Configurations
+databases:
+  source:
+    host: "postgres-source"
+    port: 5432
+    database: "source_db"
+    username: "etl_user"
+    password: "${ETL_SOURCE_PASSWORD}"  # Will be replaced by environment variable
+    schema: "public"
+    ssl_mode: "require"
+    connection_timeout: 30
+    pool_size: 20
+    max_overflow: 40
+    
+  target:
+    host: "postgres-target"
+    port: 5432
+    database: "target_db"
+    username: "etl_user"
+    password: "${ETL_TARGET_PASSWORD}"
+    schema: "public"
+    ssl_mode: "require"
+    connection_timeout: 30
+    pool_size: 20
+    max_overflow: 40
+    
+  metadata:
+    host: "postgres-metadata"
+    port: 5432
+    database: "metadata_db"
+    username: "etl_user"
+    password: "${ETL_METADATA_PASSWORD}"
+    schema: "public"
+    ssl_mode: "require"
+    connection_timeout: 30
+    pool_size: 10
+    max_overflow: 20
+
+# Spark Configuration
+spark:
+  app_name: "ProductionETL"
+  master: "local[*]"
+  executor_memory: "4g"
+  executor_cores: 4
+  driver_memory: "2g"
+  max_result_size: "2g"
+  adaptive_enabled: true
+  dynamic_allocation: true
+  sql_extensions:
+    - "io.delta.sql.DeltaSparkSessionExtension"
+  additional_configs:
+    spark.sql.catalog.spark_catalog: "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.sql.adaptive.skewJoin.enabled: "true"
+    spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+    spark.sql.execution.arrow.pyspark.enabled: "true"
+    spark.sql.parquet.enableVectorizedReader: "true"
+    spark.dynamicAllocation.minExecutors: "2"
+    spark.dynamicAllocation.maxExecutors: "20"
+    spark.dynamicAllocation.initialExecutors: "4"
+
+# Storage Configuration
+storage:
+  backup_root_path: "/app/data/backup"
+  dwh_root_path: "/app/data/dwh"
+  staging_root_path: "/app/data/staging"
+  bronze_path: "/app/data/bronze"
+  silver_path: "/app/data/silver"
+  gold_path: "/app/data/gold"
+  compression: "snappy"
+  partition_strategy: "date"
+
+# Notification Configuration
+notifications:
+  enabled: true
+  email_enabled: true
+  slack_enabled: true
+  webhook_enabled: false
+  
+  # Email Settings
+  email_smtp_host: "${SMTP_HOST}"
+  email_smtp_port: 587
+  email_username: "${SMTP_USERNAME}"
+  email_password: "${SMTP_PASSWORD}"
+  email_use_tls: true
+  sender_email: "etl-framework@company.com"
+  sender_name: "ETL Framework"
+  recipients:
+    - "data-team@company.com"
+    - "devops@company.com"
+  
+  # Slack Settings
+  slack_webhook_url: "${SLACK_WEBHOOK_URL}"
+  slack_channel: "#etl-alerts"
+  slack_username: "ETL-Bot"
+  slack_icon_emoji: ":robot_face:"
+  mention_users:
+    - "data_engineer"
+    - "devops_engineer"
+  
+  # Notification Levels
+  notification_levels:
+    - "ERROR"
+    - "SUCCESS"
+    - "WARNING"
+
+# Security Configuration
+security:
+  encryption_enabled: true
+  use_keyring: true
+  password_min_length: 12
+  session_timeout: 3600
+  audit_enabled: true
+  
+  # SSL/TLS Settings
+  ssl_verify: true
+  ssl_ca_file: "/etc/ssl/certs/ca-certificates.crt"
+  
+  # API Security
+  api_key_enabled: true
+  jwt_secret_key: "${JWT_SECRET_KEY}"
+  jwt_algorithm: "HS256"
+  jwt_expire_minutes: 60
+
+# Performance Configuration
+performance:
+  max_parallel_tables: 10
+  batch_size: 50000
+  connection_pool_size: 20
+  query_timeout: 900  # 15 minutes
+  retry_attempts: 3
+  retry_delay: 10
+  cache_enabled: true
+  optimization_enabled: true
+  
+  # Memory Settings
+  max_memory_usage_percent: 80
+  gc_threshold: 0.8
+  
+  # Concurrency Settings
+  max_concurrent_jobs: 5
+  thread_pool_size: 20
+
+# Maintenance Configuration
+maintenance:
+  retention_days: 90
+  backup_retention_days: 180
+  log_retention_days: 30
+  auto_cleanup_enabled: true
+  auto_optimize_enabled: true
+  cleanup_schedule: "0 2 * * 0"  # Sunday at 2 AM
+  optimization_schedule: "0 3 * * 0"  # Sunday at 3 AM
+  
+  # Vacuum Settings
+  vacuum_enabled: true
+  vacuum_schedule: "0 4 * * 0"  # Sunday at 4 AM
+  vacuum_retention_hours: 168  # 7 days
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_enabled: true
+  console_enabled: true
+  log_file: "/app/logs/etl_framework.log"
+  max_file_size: "100MB"
+  backup_count: 10
+  
+  # Structured Logging
+  structured_logging: true
+  json_format: true
+  
+  # Log Shipping
+  elasticsearch_enabled: true
+  elasticsearch_host: "elasticsearch"
+  elasticsearch_port: 9200
+  elasticsearch_index: "etl-framework-logs"
+
+# Monitoring Configuration
+monitoring:
+  enabled: true
+  metrics_enabled: true
+  tracing_enabled: true
+  
+  # Prometheus
+  prometheus_enabled: true
+  prometheus_port: 8000
+  metrics_path: "/metrics"
+  
+  # Health Checks
+  health_check_enabled: true
+  health_check_interval: 60
+  health_check_timeout: 10
+  
+  # Alerting Thresholds
+  alerts:
+    job_failure_threshold: 1
+    quality_score_threshold: 80
+    memory_usage_threshold: 85
+    disk_usage_threshold: 90
+    response_time_threshold: 300
+
+# Data Quality Configuration
+data_quality:
+  enabled: true
+  default_rules_enabled: true
+  custom_rules_path: "/app/config/quality_rules.yaml"
+  
+  # Quality Thresholds
+  minimum_quality_score: 75
+  warning_quality_score: 85
+  
+  # Validation Settings
+  validate_on_ingestion: true
+  validate_on_transformation: true
+  fail_on_quality_issues: false
+  
+  # Profiling Settings
+  profiling_enabled: true
+  profiling_sample_size: 10000
+  profile_all_columns: true
+
+# Scheduling Configuration
+scheduling:
+  enabled: true
+  scheduler_type: "cron"
+  timezone: "UTC"
+  max_concurrent_jobs: 10
+  
+  # Default Schedules
+  default_schedules:
+    full_sync: "0 2 * * *"      # Daily at 2 AM
+    incremental: "*/15 * * * *"  # Every 15 minutes
+    quality_check: "0 */6 * * *" # Every 6 hours
+  
+  # Retry Configuration
+  retry_enabled: true
+  max_retries: 3
+  retry_delay: 300  # 5 minutes
+  exponential_backoff: true
+
+# API Configuration
+api:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+  workers: 4
+  
+  # CORS Settings
+  cors_enabled: true
+  cors_origins:
+    - "http://localhost:3000"
+    - "https://etl-dashboard.company.com"
+  
+  # Rate Limiting
+  rate_limit_enabled: true
+  rate_limit_requests: 100
+  rate_limit_window: 60  # seconds
+  
+  # Documentation
+  docs_enabled: true
+  docs_url: "/docs"
+  redoc_url: "/redoc"
+
+# Cache Configuration
+cache:
+  enabled: true
+  backend: "redis"
+  redis_host: "redis"
+  redis_port: 6379
+  redis_db: 0
+  redis_password: "${REDIS_PASSWORD}"
+  
+  # Cache TTL Settings
+  default_ttl: 3600  # 1 hour
+  metadata_ttl: 7200  # 2 hours
+  config_ttl: 86400   # 24 hours
+
+# Backup Configuration
+backup:
+  enabled: true
+  backup_type: "incremental"
+  compression_enabled: true
+  encryption_enabled: true
+  
+  # Storage Backend
+  storage_backend: "s3"
+  s3_bucket: "${BACKUP_S3_BUCKET}"
+  s3_region: "us-east-1"
+  s3_access_key: "${AWS_ACCESS_KEY_ID}"
+  s3_secret_key: "${AWS_SECRET_ACCESS_KEY}"
+  
+  # Backup Schedule
+  schedule: "0 1 * * *"  # Daily at 1 AM
+  retention_policy:
+    daily: 30
+    weekly: 12
+    monthly: 12
+
+# External Integrations
+integrations:
+  # Apache Airflow
+  airflow:
+    enabled: false
+    host: "airflow-webserver"
+    port: 8080
+    username: "${AIRFLOW_USERNAME}"
+    password: "${AIRFLOW_PASSWORD}"
+  
+  # Kubernetes
+  kubernetes:
+    enabled: false
+    namespace: "etl-framework"
+    config_path: "/app/config/kubeconfig"
+  
+  # Grafana
+  grafana:
+    enabled: true
+    host: "grafana"
+    port: 3000
+    username: "admin"
+    password: "${GRAFANA_PASSWORD}"
+  
+  # Elasticsearch
+  elasticsearch:
+    enabled: true
+    host: "elasticsearch"
+    port: 9200
+    index_prefix: "etl-framework"
+
+# Feature Flags
+features:
+  experimental_features: false
+  beta_features: false
+  advanced_scheduling: true
+  ml_integration: false
+  stream_processing: false
+  
+# Environment-Specific Overrides
+production_overrides:
+  performance:
+    max_parallel_tables: 20
+    batch_size: 100000
+  
+  spark:
+    executor_memory: "8g"
+    executor_cores: 8
+    driver_memory: "4g"
+  
+  maintenance:
+    retention_days: 180
+    backup_retention_days: 365
+
+# Custom Application Settings
+custom_settings:
+  company_name: "Your Company"
+  department: "Data Engineering"
+  cost_center: "DE-001"
+  business_unit: "Technology"
+  
+  # Business Rules
+  business_hours:
+    start: "09:00"
+    end: "17:00"
+    timezone: "America/New_York"
+  
+  # Data Classification
+  data_classification:
+    default: "internal"
+    sensitive_tables: ["customers", "employees", "financial_data"]
+  
+  # Compliance
+  compliance:
+    gdpr_enabled: true
+    hipaa_enabled: false
+    sox_enabled: true

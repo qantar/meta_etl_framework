@@ -1,0 +1,471 @@
+# ==========================================
+# ETL Framework - Production Docker Compose
+# Complete stack with databases, monitoring, and ETL services
+# ==========================================
+
+version: '3.8'
+
+networks:
+  etl-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  postgres_source_data:
+  postgres_target_data:
+  postgres_metadata_data:
+  etl_data:
+  etl_logs:
+  etl_config:
+  minio_data:
+  grafana_data:
+  prometheus_data:
+
+services:
+  # ==========================================
+  # Source Database (PostgreSQL)
+  # ==========================================
+  postgres-source:
+    image: postgres:15-alpine
+    container_name: etl-postgres-source
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: source_db
+      POSTGRES_USER: etl_user
+      POSTGRES_PASSWORD: etl_password_source
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_source_data:/var/lib/postgresql/data
+      - ./sql/sample_source_data.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./sql/source_sample_data.sql:/docker-entrypoint-initdb.d/02-sample-data.sql
+    networks:
+      - etl-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etl_user -d source_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================
+  # Target/DWH Database (PostgreSQL)
+  # ==========================================
+  postgres-target:
+    image: postgres:15-alpine
+    container_name: etl-postgres-target
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: target_db
+      POSTGRES_USER: etl_user
+      POSTGRES_PASSWORD: etl_password_target
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_target_data:/var/lib/postgresql/data
+      - ./sql/target_init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    networks:
+      - etl-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etl_user -d target_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================
+  # Metadata Database (PostgreSQL)
+  # ==========================================
+  postgres-metadata:
+    image: postgres:15-alpine
+    container_name: etl-postgres-metadata
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: metadata_db
+      POSTGRES_USER: etl_user
+      POSTGRES_PASSWORD: etl_password_metadata
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_metadata_data:/var/lib/postgresql/data
+      - ./sql/metadata_ddl.sql:/docker-entrypoint-initdb.d/01-metadata-schema.sql
+    networks:
+      - etl-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etl_user -d metadata_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================
+  # MinIO (S3-compatible object storage)
+  # ==========================================
+  minio:
+    image: minio/minio:latest
+    container_name: etl-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: etl_minio_user
+      MINIO_ROOT_PASSWORD: etl_minio_password
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - etl-network
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # ==========================================
+  # ETL Framework - Python Engine
+  # ==========================================
+  etl-python:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: etl-python-engine
+    restart: unless-stopped
+    environment:
+      ETL_ENVIRONMENT: production
+      ETL_SOURCE_HOST: postgres-source
+      ETL_SOURCE_PORT: 5432
+      ETL_SOURCE_DATABASE: source_db
+      ETL_SOURCE_USERNAME: etl_user
+      ETL_SOURCE_PASSWORD: etl_password_source
+      ETL_TARGET_HOST: postgres-target
+      ETL_TARGET_PORT: 5432
+      ETL_TARGET_DATABASE: target_db
+      ETL_TARGET_USERNAME: etl_user
+      ETL_TARGET_PASSWORD: etl_password_target
+      ETL_METADATA_HOST: postgres-metadata
+      ETL_METADATA_PORT: 5432
+      ETL_METADATA_DATABASE: metadata_db
+      ETL_METADATA_USERNAME: etl_user
+      ETL_METADATA_PASSWORD: etl_password_metadata
+      PYTHONPATH: /app
+    volumes:
+      - etl_data:/app/data
+      - etl_logs:/app/logs
+      - etl_config:/app/config
+      - ./config/production.yaml:/app/config/production.yaml:ro
+    networks:
+      - etl-network
+    depends_on:
+      postgres-source:
+        condition: service_healthy
+      postgres-target:
+        condition: service_healthy
+      postgres-metadata:
+        condition: service_healthy
+    command: ["python", "cli.py", "--config", "/app/config/production.yaml", "pipeline", "run", "--parallel"]
+
+  # ==========================================
+  # ETL Framework - Spark Engine
+  # ==========================================
+  etl-spark:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: etl-spark-engine
+    restart: unless-stopped
+    environment:
+      ETL_ENVIRONMENT: production
+      ETL_SOURCE_HOST: postgres-source
+      ETL_TARGET_HOST: postgres-target
+      ETL_METADATA_HOST: postgres-metadata
+      SPARK_MASTER: local[*]
+      SPARK_DRIVER_MEMORY: 2g
+      SPARK_EXECUTOR_MEMORY: 2g
+      SPARK_DRIVER_MAX_RESULT_SIZE: 1g
+      PYTHONPATH: /app
+    volumes:
+      - etl_data:/app/data
+      - etl_logs:/app/logs
+      - etl_config:/app/config
+      - ./config/production.yaml:/app/config/production.yaml:ro
+    networks:
+      - etl-network
+    depends_on:
+      - postgres-source
+      - postgres-target
+      - postgres-metadata
+      - minio
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+    command: ["tail", "-f", "/dev/null"]  # Keep container running for manual spark jobs
+
+  # ==========================================
+  # ETL Scheduler Service
+  # ==========================================
+  etl-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: etl-scheduler
+    restart: unless-stopped
+    environment:
+      ETL_ENVIRONMENT: production
+      ETL_METADATA_HOST: postgres-metadata
+      PYTHONPATH: /app
+    volumes:
+      - etl_data:/app/data
+      - etl_logs:/app/logs
+      - etl_config:/app/config
+      - ./config/production.yaml:/app/config/production.yaml:ro
+      - ./scheduler_config:/app/scheduler_config
+    networks:
+      - etl-network
+    depends_on:
+      - postgres-metadata
+      - etl-python
+    command: ["python", "-c", "from src.scheduler_orchestrator import JobScheduler; import asyncio; asyncio.run(JobScheduler().start())"]
+
+  # ==========================================
+  # Redis (for caching and job queues)
+  # ==========================================
+  redis:
+    image: redis:7-alpine
+    container_name: etl-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    networks:
+      - etl-network
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ==========================================
+  # Monitoring: Prometheus
+  # ==========================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: etl-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - etl-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+
+  # ==========================================
+  # Monitoring: Grafana
+  # ==========================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: etl-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: etl_grafana_password
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - etl-network
+    depends_on:
+      - prometheus
+
+  # ==========================================
+  # Log Management: Elasticsearch
+  # ==========================================
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.8.0
+    container_name: etl-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - ./data/elasticsearch:/usr/share/elasticsearch/data
+    networks:
+      - etl-network
+
+  # ==========================================
+  # Log Management: Kibana
+  # ==========================================
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.8.0
+    container_name: etl-kibana
+    restart: unless-stopped
+    ports:
+      - "5601:5601"
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    networks:
+      - etl-network
+    depends_on:
+      - elasticsearch
+
+  # ==========================================
+  # Log Shipping: Filebeat
+  # ==========================================
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.8.0
+    container_name: etl-filebeat
+    restart: unless-stopped
+    user: root
+    volumes:
+      - ./monitoring/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - etl_logs:/var/log/etl:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - etl-network
+    depends_on:
+      - elasticsearch
+    command: ["filebeat", "-e", "-strict.perms=false"]
+
+  # ==========================================
+  # API Gateway: Nginx
+  # ==========================================
+  nginx:
+    image: nginx:alpine
+    container_name: etl-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    networks:
+      - etl-network
+    depends_on:
+      - grafana
+      - kibana
+
+  # ==========================================
+  # Backup Service
+  # ==========================================
+  backup:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: etl-backup
+    restart: unless-stopped
+    environment:
+      BACKUP_SCHEDULE: "0 2 * * *"  # Daily at 2 AM
+      BACKUP_RETENTION_DAYS: 30
+      PYTHONPATH: /app
+    volumes:
+      - etl_data:/app/data:ro
+      - etl_logs:/app/logs:ro
+      - postgres_source_data:/backup/postgres_source:ro
+      - postgres_target_data:/backup/postgres_target:ro
+      - postgres_metadata_data:/backup/postgres_metadata:ro
+      - ./backups:/app/backups
+    networks:
+      - etl-network
+    command: ["python", "scripts/backup_service.py"]
+
+  # ==========================================
+  # Health Check Service
+  # ==========================================
+  healthcheck:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: etl-healthcheck
+    restart: unless-stopped
+    environment:
+      HEALTHCHECK_INTERVAL: 60  # seconds
+      PYTHONPATH: /app
+    volumes:
+      - etl_logs:/app/logs
+      - ./config/production.yaml:/app/config/production.yaml:ro
+    networks:
+      - etl-network
+    depends_on:
+      - postgres-source
+      - postgres-target
+      - postgres-metadata
+      - redis
+    command: ["python", "scripts/health_monitor.py"]
+
+  # ==========================================
+  # Development/Testing Services
+  # ==========================================
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: etl-jupyter
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    environment:
+      JUPYTER_ENABLE_LAB: "yes"
+      PYTHONPATH: /app
+    volumes:
+      - .:/app/workspace
+      - etl_data:/app/data
+      - etl_logs:/app/logs
+    networks:
+      - etl-network
+    profiles:
+      - development
+    command: ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--LabApp.token=''"]
+
+  # ==========================================
+  # Test Runner
+  # ==========================================
+  tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: etl-tests
+    environment:
+      PYTHONPATH: /app
+    volumes:
+      - .:/app/workspace
+      - etl_logs:/app/logs
+    networks:
+      - etl-network
+    profiles:
+      - testing
+    command: ["python", "-m", "pytest", "tests/", "-v", "--cov=src", "--cov-report=html"]
+
+# ==========================================
+# Development Override
+# ==========================================

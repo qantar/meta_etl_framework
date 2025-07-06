@@ -1,0 +1,496 @@
+# ==========================================
+# monitoring/prometheus.yml
+# Prometheus Configuration
+# ==========================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'etl-framework'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - "etl_rules.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # ETL Framework Services
+  - job_name: 'etl-python'
+    static_configs:
+      - targets: ['etl-python:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    
+  - job_name: 'etl-spark'
+    static_configs:
+      - targets: ['etl-spark:4040']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    
+  - job_name: 'etl-scheduler'
+    static_configs:
+      - targets: ['etl-scheduler:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Database Monitoring
+  - job_name: 'postgres-source'
+    static_configs:
+      - targets: ['postgres-source:5432']
+    scrape_interval: 30s
+    
+  - job_name: 'postgres-target'
+    static_configs:
+      - targets: ['postgres-target:5432']
+    scrape_interval: 30s
+    
+  - job_name: 'postgres-metadata'
+    static_configs:
+      - targets: ['postgres-metadata:5432']
+    scrape_interval: 30s
+
+  # Infrastructure
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    scrape_interval: 30s
+    
+  - job_name: 'minio'
+    static_configs:
+      - targets: ['minio:9000']
+    metrics_path: '/minio/v2/metrics/cluster'
+    scrape_interval: 30s
+
+  # System Metrics (Node Exporter would be added in real deployment)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: []  # Add node-exporter targets
+
+---
+
+# ==========================================
+# monitoring/grafana/datasources/prometheus.yml
+# Grafana Datasource Configuration
+# ==========================================
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    
+  - name: Elasticsearch
+    type: elasticsearch
+    access: proxy
+    url: http://elasticsearch:9200
+    database: "etl-framework-logs-*"
+    interval: Daily
+    timeField: "@timestamp"
+    editable: true
+
+---
+
+# ==========================================
+# monitoring/grafana/dashboards/etl-overview.json
+# ETL Framework Overview Dashboard
+# ==========================================
+
+{
+  "dashboard": {
+    "id": null,
+    "title": "ETL Framework Overview",
+    "tags": ["etl", "data-pipeline"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Pipeline Success Rate",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "rate(etl_jobs_completed_total{status=\"success\"}[5m]) / rate(etl_jobs_completed_total[5m]) * 100",
+            "legendFormat": "Success Rate %"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": 0},
+                {"color": "yellow", "value": 80},
+                {"color": "green", "value": 95}
+              ]
+            }
+          }
+        },
+        "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0}
+      },
+      {
+        "id": 2,
+        "title": "Active Jobs",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "etl_jobs_running_total",
+            "legendFormat": "Running Jobs"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0}
+      },
+      {
+        "id": 3,
+        "title": "Data Quality Score",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "avg(etl_data_quality_score)",
+            "legendFormat": "Quality Score"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": 0},
+                {"color": "yellow", "value": 75},
+                {"color": "green", "value": 90}
+              ]
+            }
+          }
+        },
+        "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0}
+      },
+      {
+        "id": 4,
+        "title": "Total Records Processed",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "sum(increase(etl_records_processed_total[24h]))",
+            "legendFormat": "Records (24h)"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          }
+        },
+        "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0}
+      },
+      {
+        "id": 5,
+        "title": "Job Execution Time",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(etl_job_duration_seconds_bucket[5m]))",
+            "legendFormat": "95th percentile"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(etl_job_duration_seconds_bucket[5m]))",
+            "legendFormat": "50th percentile"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s"
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+      },
+      {
+        "id": 6,
+        "title": "Memory Usage",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "process_resident_memory_bytes{job=~\"etl-.*\"} / 1024 / 1024",
+            "legendFormat": "{{job}} Memory MB"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "decbytes"
+          }
+        },
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "refresh": "30s"
+  }
+}
+
+---
+
+# ==========================================
+# monitoring/filebeat.yml
+# Filebeat Configuration for Log Shipping
+# ==========================================
+
+filebeat.inputs:
+  # ETL Framework Application Logs
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/etl/*.log
+      - /var/log/etl/*/*.log
+    fields:
+      service: etl-framework
+      environment: production
+    fields_under_root: true
+    multiline.pattern: '^\d{4}-\d{2}-\d{2}'
+    multiline.negate: true
+    multiline.match: after
+    
+  # Docker Container Logs
+  - type: container
+    enabled: true
+    paths:
+      - '/var/lib/docker/containers/*/*.log'
+    processors:
+      - add_docker_metadata:
+          host: "unix:///var/run/docker.sock"
+      - decode_json_fields:
+          fields: ["message"]
+          target: ""
+          overwrite_keys: true
+
+# Output to Elasticsearch
+output.elasticsearch:
+  hosts: ["elasticsearch:9200"]
+  index: "etl-framework-logs-%{+yyyy.MM.dd}"
+  template.name: "etl-framework"
+  template.pattern: "etl-framework-*"
+  template.settings:
+    index.number_of_shards: 1
+    index.number_of_replicas: 0
+
+# Logging configuration
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 7
+  permissions: 0644
+
+# Monitoring
+monitoring.enabled: true
+
+---
+
+# ==========================================
+# monitoring/etl_rules.yml
+# Prometheus Alerting Rules
+# ==========================================
+
+groups:
+  - name: etl_framework_alerts
+    rules:
+      # Job Failure Alert
+      - alert: ETLJobFailure
+        expr: increase(etl_jobs_completed_total{status="failed"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ETL Job Failed"
+          description: "ETL job {{ $labels.job_name }} has failed"
+          
+      # High Failure Rate
+      - alert: ETLHighFailureRate
+        expr: (rate(etl_jobs_completed_total{status="failed"}[5m]) / rate(etl_jobs_completed_total[5m])) * 100 > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High ETL Job Failure Rate"
+          description: "ETL job failure rate is {{ $value }}% over the last 5 minutes"
+          
+      # Data Quality Alert
+      - alert: LowDataQuality
+        expr: avg(etl_data_quality_score) < 75
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low Data Quality Score"
+          description: "Average data quality score is {{ $value }}%"
+          
+      # Long Running Job
+      - alert: ETLJobTakingTooLong
+        expr: etl_job_duration_seconds > 3600
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ETL Job Taking Too Long"
+          description: "ETL job {{ $labels.job_name }} has been running for {{ $value }} seconds"
+          
+      # Memory Usage Alert
+      - alert: HighMemoryUsage
+        expr: (process_resident_memory_bytes{job=~"etl-.*"} / process_virtual_memory_max_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Memory Usage"
+          description: "{{ $labels.job }} memory usage is {{ $value }}%"
+          
+      # Database Connection Alert
+      - alert: DatabaseConnectionFailure
+        expr: up{job=~"postgres-.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database Connection Failed"
+          description: "Cannot connect to {{ $labels.job }}"
+          
+      # Disk Usage Alert
+      - alert: HighDiskUsage
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High Disk Usage"
+          description: "Disk usage is above 90%"
+
+---
+
+# ==========================================
+# nginx/nginx.conf
+# Nginx Configuration for API Gateway
+# ==========================================
+
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+    use epoll;
+    multi_accept on;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    
+    # Logging
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+    access_log /var/log/nginx/access.log main;
+    
+    # Performance
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    client_max_body_size 100M;
+    
+    # Compression
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_types text/plain text/css text/xml text/javascript application/javascript application/xml+rss application/json;
+    
+    # Rate limiting
+    limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+    limit_req_zone $binary_remote_addr zone=dashboard:10m rate=5r/s;
+    
+    # Upstream definitions
+    upstream grafana {
+        server grafana:3000;
+    }
+    
+    upstream kibana {
+        server kibana:5601;
+    }
+    
+    upstream etl_api {
+        server etl-python:8080;
+    }
+    
+    # Main server block
+    server {
+        listen 80;
+        server_name etl-framework.local;
+        
+        # Security headers
+        add_header X-Frame-Options DENY;
+        add_header X-Content-Type-Options nosniff;
+        add_header X-XSS-Protection "1; mode=block";
+        
+        # ETL API
+        location /api/ {
+            limit_req zone=api burst=20 nodelay;
+            proxy_pass http://etl_api/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+        
+        # Grafana Dashboard
+        location /grafana/ {
+            limit_req zone=dashboard burst=10 nodelay;
+            proxy_pass http://grafana/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+        
+        # Kibana Logs
+        location /logs/ {
+            limit_req zone=dashboard burst=10 nodelay;
+            proxy_pass http://kibana/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+        
+        # Health check
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+        
+        # Default location
+        location / {
+            return 301 /grafana/;
+        }
+    }
+}

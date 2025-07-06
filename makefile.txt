@@ -1,0 +1,425 @@
+# ==========================================
+# ETL Framework - Production Makefile
+# ==========================================
+
+.PHONY: help build test lint clean deploy stop logs status backup restore
+
+# Default target
+.DEFAULT_GOAL := help
+
+# Variables
+DOCKER_COMPOSE := docker-compose
+DOCKER_COMPOSE_PROD := docker-compose -f docker-compose.yml -f docker-compose.prod.yml
+PYTHON := python3
+PIP := pip3
+PROJECT_NAME := etl-framework
+VERSION := $(shell cat VERSION || echo "1.0.0")
+
+# Colors for output
+RED := \033[31m
+GREEN := \033[32m
+YELLOW := \033[33m
+BLUE := \033[34m
+RESET := \033[0m
+
+help: ## Show this help message
+	@echo "$(BLUE)ETL Framework - Production Makefile$(RESET)"
+	@echo "$(YELLOW)Version: $(VERSION)$(RESET)"
+	@echo ""
+	@echo "$(GREEN)Available targets:$(RESET)"
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  $(BLUE)%-20s$(RESET) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+# ==========================================
+# Development Setup
+# ==========================================
+
+setup: ## Set up development environment
+	@echo "$(GREEN)Setting up development environment...$(RESET)"
+	$(PYTHON) -m venv venv
+	./venv/bin/pip install --upgrade pip
+	./venv/bin/pip install -e ".[dev,testing,docs]"
+	./venv/bin/pre-commit install
+	@echo "$(GREEN)Development environment ready!$(RESET)"
+
+install: ## Install the package
+	@echo "$(GREEN)Installing ETL Framework...$(RESET)"
+	$(PIP) install -e .
+	@echo "$(GREEN)Installation complete!$(RESET)"
+
+install-prod: ## Install production dependencies only
+	@echo "$(GREEN)Installing production dependencies...$(RESET)"
+	$(PIP) install -e ".[aws,azure,gcp,databases,streaming]"
+	@echo "$(GREEN)Production installation complete!$(RESET)"
+
+# ==========================================
+# Code Quality & Testing
+# ==========================================
+
+lint: ## Run code linting
+	@echo "$(GREEN)Running code linting...$(RESET)"
+	black --check src/ tests/ cli.py
+	flake8 src/ tests/ cli.py
+	mypy src/ cli.py
+	isort --check-only src/ tests/ cli.py
+	@echo "$(GREEN)Linting complete!$(RESET)"
+
+format: ## Format code
+	@echo "$(GREEN)Formatting code...$(RESET)"
+	black src/ tests/ cli.py
+	isort src/ tests/ cli.py
+	@echo "$(GREEN)Code formatting complete!$(RESET)"
+
+test: ## Run unit tests
+	@echo "$(GREEN)Running unit tests...$(RESET)"
+	pytest tests/unit/ -v --cov=src --cov-report=term-missing --cov-report=html
+	@echo "$(GREEN)Unit tests complete!$(RESET)"
+
+test-integration: ## Run integration tests
+	@echo "$(GREEN)Running integration tests...$(RESET)"
+	$(DOCKER_COMPOSE) up -d postgres-source postgres-target postgres-metadata
+	sleep 10
+	pytest tests/integration/ -v
+	$(DOCKER_COMPOSE) down
+	@echo "$(GREEN)Integration tests complete!$(RESET)"
+
+test-performance: ## Run performance tests
+	@echo "$(GREEN)Running performance tests...$(RESET)"
+	pytest tests/performance/ -v --benchmark-only --benchmark-sort=mean
+	@echo "$(GREEN)Performance tests complete!$(RESET)"
+
+test-all: lint test test-integration ## Run all tests
+	@echo "$(GREEN)All tests completed successfully!$(RESET)"
+
+coverage: ## Generate coverage report
+	@echo "$(GREEN)Generating coverage report...$(RESET)"
+	pytest tests/ --cov=src --cov-report=html --cov-report=term
+	@echo "$(GREEN)Coverage report generated in htmlcov/$(RESET)"
+
+# ==========================================
+# Docker & Container Management
+# ==========================================
+
+build: ## Build Docker images
+	@echo "$(GREEN)Building Docker images...$(RESET)"
+	docker build -t $(PROJECT_NAME):$(VERSION) .
+	docker build -t $(PROJECT_NAME):latest .
+	@echo "$(GREEN)Docker images built successfully!$(RESET)"
+
+build-prod: ## Build production Docker images
+	@echo "$(GREEN)Building production Docker images...$(RESET)"
+	docker build --target production -t $(PROJECT_NAME):$(VERSION)-prod .
+	docker build --target production -t $(PROJECT_NAME):latest-prod .
+	@echo "$(GREEN)Production Docker images built successfully!$(RESET)"
+
+up: ## Start development environment
+	@echo "$(GREEN)Starting development environment...$(RESET)"
+	$(DOCKER_COMPOSE) up -d
+	@echo "$(GREEN)Development environment started!$(RESET)"
+	@echo "$(YELLOW)Access points:$(RESET)"
+	@echo "  Grafana: http://localhost:3000"
+	@echo "  Kibana: http://localhost:5601"
+	@echo "  MinIO: http://localhost:9001"
+
+up-prod: ## Start production environment
+	@echo "$(GREEN)Starting production environment...$(RESET)"
+	$(DOCKER_COMPOSE_PROD) up -d
+	@echo "$(GREEN)Production environment started!$(RESET)"
+
+down: ## Stop all services
+	@echo "$(GREEN)Stopping all services...$(RESET)"
+	$(DOCKER_COMPOSE) down -v
+	@echo "$(GREEN)All services stopped!$(RESET)"
+
+restart: down up ## Restart all services
+
+logs: ## View logs from all services
+	$(DOCKER_COMPOSE) logs -f
+
+logs-etl: ## View ETL service logs
+	$(DOCKER_COMPOSE) logs -f etl-python etl-spark etl-scheduler
+
+status: ## Show status of all services
+	@echo "$(GREEN)Service Status:$(RESET)"
+	$(DOCKER_COMPOSE) ps
+
+health: ## Check health of all services
+	@echo "$(GREEN)Health Check:$(RESET)"
+	$(DOCKER_COMPOSE) exec etl-python etl-cli monitor health
+
+# ==========================================
+# Database Management
+# ==========================================
+
+db-init: ## Initialize databases with sample data
+	@echo "$(GREEN)Initializing databases...$(RESET)"
+	$(DOCKER_COMPOSE) exec postgres-source psql -U etl_user -d source_db -f /docker-entrypoint-initdb.d/01-init.sql
+	$(DOCKER_COMPOSE) exec postgres-target psql -U etl_user -d target_db -f /docker-entrypoint-initdb.d/01-init.sql
+	$(DOCKER_COMPOSE) exec postgres-metadata psql -U etl_user -d metadata_db -f /docker-entrypoint-initdb.d/01-metadata-schema.sql
+	@echo "$(GREEN)Databases initialized!$(RESET)"
+
+db-reset: ## Reset all databases
+	@echo "$(RED)Resetting all databases... This will delete all data!$(RESET)"
+	@read -p "Are you sure? (y/N): " confirm && [ "$$confirm" = "y" ]
+	$(DOCKER_COMPOSE) down -v
+	docker volume prune -f
+	$(DOCKER_COMPOSE) up -d postgres-source postgres-target postgres-metadata
+	sleep 10
+	make db-init
+	@echo "$(GREEN)Databases reset complete!$(RESET)"
+
+db-backup: ## Backup all databases
+	@echo "$(GREEN)Backing up databases...$(RESET)"
+	mkdir -p backups/$(shell date +%Y%m%d_%H%M%S)
+	$(DOCKER_COMPOSE) exec postgres-source pg_dump -U etl_user source_db > backups/$(shell date +%Y%m%d_%H%M%S)/source_db.sql
+	$(DOCKER_COMPOSE) exec postgres-target pg_dump -U etl_user target_db > backups/$(shell date +%Y%m%d_%H%M%S)/target_db.sql
+	$(DOCKER_COMPOSE) exec postgres-metadata pg_dump -U etl_user metadata_db > backups/$(shell date +%Y%m%d_%H%M%S)/metadata_db.sql
+	@echo "$(GREEN)Database backup complete!$(RESET)"
+
+# ==========================================
+# ETL Operations
+# ==========================================
+
+discover: ## Discover and register source tables
+	@echo "$(GREEN)Discovering source tables...$(RESET)"
+	$(DOCKER_COMPOSE) exec etl-python etl-cli discover tables --register
+	@echo "$(GREEN)Table discovery complete!$(RESET)"
+
+run-pipeline: ## Run the ETL pipeline
+	@echo "$(GREEN)Running ETL pipeline...$(RESET)"
+	$(DOCKER_COMPOSE) exec etl-python etl-cli pipeline run --parallel
+	@echo "$(GREEN)Pipeline execution complete!$(RESET)"
+
+run-quality: ## Run data quality checks
+	@echo "$(GREEN)Running data quality checks...$(RESET)"
+	$(DOCKER_COMPOSE) exec etl-python etl-cli quality check --all-tables --generate-report
+	@echo "$(GREEN)Data quality checks complete!$(RESET)"
+
+pipeline-status: ## Show pipeline status
+	@echo "$(GREEN)Pipeline Status:$(RESET)"
+	$(DOCKER_COMPOSE) exec etl-python etl-cli pipeline status --days 7
+
+scheduler-start: ## Start the job scheduler
+	@echo "$(GREEN)Starting job scheduler...$(RESET)"
+	$(DOCKER_COMPOSE) exec etl-scheduler python -m src.scheduler_orchestrator
+	@echo "$(GREEN)Job scheduler started!$(RESET)"
+
+# ==========================================
+# Monitoring & Maintenance
+# ==========================================
+
+cleanup: ## Clean up old data and optimize storage
+	@echo "$(GREEN)Running cleanup and optimization...$(RESET)"
+	$(DOCKER_COMPOSE) exec etl-python etl-cli maintenance cleanup --retention-days 30
+	$(DOCKER_COMPOSE) exec etl-spark etl-cli maintenance optimize
+	@echo "$(GREEN)Cleanup complete!$(RESET)"
+
+backup: ## Create full system backup
+	@echo "$(GREEN)Creating full system backup...$(RESET)"
+	mkdir -p backups/full_$(shell date +%Y%m%d_%H%M%S)
+	make db-backup
+	$(DOCKER_COMPOSE) exec etl-python tar -czf /tmp/etl_data_backup.tar.gz /app/data
+	docker cp $(shell docker-compose ps -q etl-python):/tmp/etl_data_backup.tar.gz backups/full_$(shell date +%Y%m%d_%H%M%S)/
+	@echo "$(GREEN)Full system backup complete!$(RESET)"
+
+restore: ## Restore from backup (requires BACKUP_DIR variable)
+	@echo "$(RED)Restoring from backup...$(RESET)"
+	@if [ -z "$(BACKUP_DIR)" ]; then echo "$(RED)Please specify BACKUP_DIR=path/to/backup$(RESET)"; exit 1; fi
+	@read -p "This will overwrite current data. Continue? (y/N): " confirm && [ "$$confirm" = "y" ]
+	make db-reset
+	$(DOCKER_COMPOSE) exec postgres-source psql -U etl_user -d source_db < $(BACKUP_DIR)/source_db.sql
+	$(DOCKER_COMPOSE) exec postgres-target psql -U etl_user -d target_db < $(BACKUP_DIR)/target_db.sql
+	$(DOCKER_COMPOSE) exec postgres-metadata psql -U etl_user -d metadata_db < $(BACKUP_DIR)/metadata_db.sql
+	@echo "$(GREEN)System restore complete!$(RESET)"
+
+monitor: ## Open monitoring dashboard
+	@echo "$(GREEN)Opening monitoring dashboards...$(RESET)"
+	@echo "Grafana: http://localhost:3000"
+	@echo "Kibana: http://localhost:5601"
+	@echo "Prometheus: http://localhost:9090"
+
+# ==========================================
+# Documentation
+# ==========================================
+
+docs: ## Generate documentation
+	@echo "$(GREEN)Generating documentation...$(RESET)"
+	cd docs && sphinx-build -b html . _build/html
+	@echo "$(GREEN)Documentation generated in docs/_build/html/$(RESET)"
+
+docs-serve: ## Serve documentation locally
+	@echo "$(GREEN)Serving documentation at http://localhost:8000$(RESET)"
+	cd docs/_build/html && python -m http.server 8000
+
+# ==========================================
+# Security & Compliance
+# ==========================================
+
+security-scan: ## Run security scan
+	@echo "$(GREEN)Running security scan...$(RESET)"
+	safety check
+	bandit -r src/
+	@echo "$(GREEN)Security scan complete!$(RESET)"
+
+vulnerability-check: ## Check for vulnerabilities
+	@echo "$(GREEN)Checking for vulnerabilities...$(RESET)"
+	pip-audit
+	@echo "$(GREEN)Vulnerability check complete!$(RESET)"
+
+# ==========================================
+# Performance & Benchmarking
+# ==========================================
+
+benchmark: ## Run performance benchmarks
+	@echo "$(GREEN)Running performance benchmarks...$(RESET)"
+	$(DOCKER_COMPOSE) exec etl-python python scripts/benchmark.py
+	$(DOCKER_COMPOSE) exec etl-spark python scripts/spark_benchmark.py
+	@echo "$(GREEN)Benchmarks complete!$(RESET)"
+
+load-test: ## Run load testing
+	@echo "$(GREEN)Running load tests...$(RESET)"
+	$(DOCKER_COMPOSE) exec etl-python python scripts/load_test.py --tables 50 --rows 1000000
+	@echo "$(GREEN)Load testing complete!$(RESET)"
+
+profile: ## Profile application performance
+	@echo "$(GREEN)Profiling application...$(RESET)"
+	$(DOCKER_COMPOSE) exec etl-python python -m cProfile -o profile_results.prof scripts/profile_etl.py
+	@echo "$(GREEN)Profiling complete! Results in profile_results.prof$(RESET)"
+
+# ==========================================
+# Deployment
+# ==========================================
+
+deploy-staging: ## Deploy to staging environment
+	@echo "$(GREEN)Deploying to staging...$(RESET)"
+	$(DOCKER_COMPOSE_PROD) -f docker-compose.staging.yml up -d
+	@echo "$(GREEN)Staging deployment complete!$(RESET)"
+
+deploy-prod: build-prod ## Deploy to production environment
+	@echo "$(GREEN)Deploying to production...$(RESET)"
+	@read -p "Deploy to production? (y/N): " confirm && [ "$$confirm" = "y" ]
+	$(DOCKER_COMPOSE_PROD) up -d
+	@echo "$(GREEN)Production deployment complete!$(RESET)"
+
+k8s-deploy: ## Deploy to Kubernetes
+	@echo "$(GREEN)Deploying to Kubernetes...$(RESET)"
+	helm upgrade --install etl-framework ./helm/ --values values.prod.yaml
+	@echo "$(GREEN)Kubernetes deployment complete!$(RESET)"
+
+# ==========================================
+# Cleanup
+# ==========================================
+
+clean: ## Clean up build artifacts and temporary files
+	@echo "$(GREEN)Cleaning up...$(RESET)"
+	find . -type f -name "*.pyc" -delete
+	find . -type d -name "__pycache__" -delete
+	find . -type d -name "*.egg-info" -exec rm -rf {} +
+	rm -rf build/ dist/ htmlcov/ .coverage .pytest_cache/
+	docker system prune -f
+	@echo "$(GREEN)Cleanup complete!$(RESET)"
+
+clean-all: clean ## Clean everything including Docker volumes
+	@echo "$(RED)Cleaning everything including data volumes...$(RESET)"
+	@read -p "This will delete all data! Continue? (y/N): " confirm && [ "$$confirm" = "y" ]
+	$(DOCKER_COMPOSE) down -v --rmi all
+	docker volume prune -f
+	docker network prune -f
+	@echo "$(GREEN)Complete cleanup finished!$(RESET)"
+
+# ==========================================
+# Utilities
+# ==========================================
+
+shell: ## Open shell in main ETL container
+	$(DOCKER_COMPOSE) exec etl-python bash
+
+shell-spark: ## Open shell in Spark container
+	$(DOCKER_COMPOSE) exec etl-spark bash
+
+psql-source: ## Connect to source database
+	$(DOCKER_COMPOSE) exec postgres-source psql -U etl_user -d source_db
+
+psql-target: ## Connect to target database
+	$(DOCKER_COMPOSE) exec postgres-target psql -U etl_user -d target_db
+
+psql-metadata: ## Connect to metadata database
+	$(DOCKER_COMPOSE) exec postgres-metadata psql -U etl_user -d metadata_db
+
+version: ## Show version information
+	@echo "$(BLUE)ETL Framework Version: $(VERSION)$(RESET)"
+	@echo "$(BLUE)Docker Compose Version:$(RESET)"
+	@$(DOCKER_COMPOSE) version
+	@echo "$(BLUE)Python Version:$(RESET)"
+	@$(PYTHON) --version
+
+# ==========================================
+# Development Helpers
+# ==========================================
+
+dev-reset: ## Reset development environment
+	@echo "$(GREEN)Resetting development environment...$(RESET)"
+	make clean
+	make down
+	make up
+	sleep 15
+	make db-init
+	make discover
+	@echo "$(GREEN)Development environment reset complete!$(RESET)"
+
+quick-test: ## Quick test run (unit tests only)
+	@echo "$(GREEN)Running quick tests...$(RESET)"
+	pytest tests/unit/ -x -v
+	@echo "$(GREEN)Quick tests complete!$(RESET)"
+
+pre-commit: ## Run pre-commit checks
+	@echo "$(GREEN)Running pre-commit checks...$(RESET)"
+	pre-commit run --all-files
+	@echo "$(GREEN)Pre-commit checks complete!$(RESET)"
+
+# ==========================================
+# CI/CD Helpers
+# ==========================================
+
+ci-setup: ## Setup for CI environment
+	@echo "$(GREEN)Setting up CI environment...$(RESET)"
+	$(PIP) install -e ".[dev,testing]"
+	@echo "$(GREEN)CI setup complete!$(RESET)"
+
+ci-test: ## Run CI test suite
+	@echo "$(GREEN)Running CI test suite...$(RESET)"
+	make lint
+	make test
+	make security-scan
+	@echo "$(GREEN)CI test suite complete!$(RESET)"
+
+release: ## Create a new release
+	@echo "$(GREEN)Creating new release...$(RESET)"
+	@read -p "Enter new version (current: $(VERSION)): " new_version; \
+	echo $$new_version > VERSION; \
+	git add VERSION; \
+	git commit -m "Release version $$new_version"; \
+	git tag -a v$$new_version -m "Release version $$new_version"; \
+	echo "$(GREEN)Release $$new_version created! Don't forget to push tags.$(RESET)"
+
+# ==========================================
+# Help and Information
+# ==========================================
+
+info: ## Show system information
+	@echo "$(BLUE)=== ETL Framework System Information ===$(RESET)"
+	@echo "$(GREEN)Version:$(RESET) $(VERSION)"
+	@echo "$(GREEN)Project:$(RESET) $(PROJECT_NAME)"
+	@echo "$(GREEN)Docker Compose Services:$(RESET)"
+	@$(DOCKER_COMPOSE) config --services
+	@echo "$(GREEN)Current Branch:$(RESET) $(shell git branch --show-current 2>/dev/null || echo 'Not in git repo')"
+	@echo "$(GREEN)Last Commit:$(RESET) $(shell git log -1 --format='%h %s' 2>/dev/null || echo 'Not in git repo')"
+
+env-check: ## Check environment configuration
+	@echo "$(GREEN)Checking environment configuration...$(RESET)"
+	@echo "$(BLUE)Python Version:$(RESET) $(shell $(PYTHON) --version)"
+	@echo "$(BLUE)Docker Version:$(RESET) $(shell docker --version)"
+	@echo "$(BLUE)Docker Compose Version:$(RESET) $(shell docker-compose --version)"
+	@echo "$(BLUE)Available Memory:$(RESET) $(shell free -h 2>/dev/null | grep Mem | awk '{print $$2}' || echo 'Unknown')"
+	@echo "$(BLUE)Available Disk:$(RESET) $(shell df -h . | tail -1 | awk '{print $$4}' || echo 'Unknown')"
+	@if [ -f .env ]; then echo "$(GREEN)✓ .env file exists$(RESET)"; else echo "$(RED)✗ .env file missing$(RESET)"; fi
+	@if [ -f config/production.yaml ]; then echo "$(GREEN)✓ Production config exists$(RESET)"; else echo "$(RED)✗ Production config missing$(RESET)"; fi
