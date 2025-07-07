@@ -664,3 +664,365 @@ LEFT JOIN LATERAL (
 ) latest_run ON true
 WHERE ctl.is_active = TRUE
 ORDER BY ctl.priority DESC, ctl.last_ingestion_time ASC;
+
+
+
+--- Version 2 
+
+-- ==========================================
+-- sql/sample_source_data.sql
+-- Sample source data for testing ETL framework
+-- ==========================================
+
+-- Create sample schemas
+CREATE SCHEMA IF NOT EXISTS sales;
+CREATE SCHEMA IF NOT EXISTS finance;
+CREATE SCHEMA IF NOT EXISTS hr;
+
+-- ==========================================
+-- CUSTOMERS TABLE (SCD Type 2 Example)
+-- ==========================================
+
+CREATE TABLE IF NOT EXISTS public.customers (
+    customer_id SERIAL PRIMARY KEY,
+    customer_code VARCHAR(20) UNIQUE NOT NULL,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    email VARCHAR(255) UNIQUE,
+    phone VARCHAR(20),
+    address_line1 VARCHAR(255),
+    address_line2 VARCHAR(255),
+    city VARCHAR(100),
+    state VARCHAR(50),
+    postal_code VARCHAR(20),
+    country VARCHAR(50) DEFAULT 'USA',
+    customer_type VARCHAR(20) DEFAULT 'Regular',
+    status VARCHAR(20) DEFAULT 'Active',
+    credit_limit DECIMAL(12,2) DEFAULT 5000.00,
+    registration_date DATE DEFAULT CURRENT_DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insert sample customers
+INSERT INTO public.customers (customer_code, first_name, last_name, email, phone, address_line1, city, state, postal_code, customer_type, credit_limit) VALUES
+('CUST001', 'John', 'Smith', 'john.smith@email.com', '+1-555-0101', '123 Main St', 'New York', 'NY', '10001', 'Premium', 10000.00),
+('CUST002', 'Jane', 'Johnson', 'jane.johnson@email.com', '+1-555-0102', '456 Oak Ave', 'Los Angeles', 'CA', '90001', 'Regular', 5000.00),
+('CUST003', 'Mike', 'Williams', 'mike.williams@email.com', '+1-555-0103', '789 Pine St', 'Chicago', 'IL', '60601', 'Premium', 15000.00),
+('CUST004', 'Sarah', 'Brown', 'sarah.brown@email.com', '+1-555-0104', '321 Elm St', 'Houston', 'TX', '77001', 'Regular', 7500.00),
+('CUST005', 'David', 'Davis', 'david.davis@email.com', '+1-555-0105', '654 Maple Dr', 'Phoenix', 'AZ', '85001', 'Regular', 5000.00);
+
+-- ==========================================
+-- PRODUCTS TABLE
+-- ==========================================
+
+CREATE TABLE IF NOT EXISTS sales.products (
+    product_id SERIAL PRIMARY KEY,
+    product_code VARCHAR(20) UNIQUE NOT NULL,
+    product_name VARCHAR(255) NOT NULL,
+    category VARCHAR(100),
+    subcategory VARCHAR(100),
+    brand VARCHAR(100),
+    unit_price DECIMAL(10,2) NOT NULL,
+    cost_price DECIMAL(10,2),
+    weight_kg DECIMAL(8,3),
+    dimensions VARCHAR(50),
+    color VARCHAR(50),
+    size VARCHAR(20),
+    stock_quantity INTEGER DEFAULT 0,
+    reorder_level INTEGER DEFAULT 10,
+    supplier_id INTEGER,
+    is_active BOOLEAN DEFAULT TRUE,
+    launch_date DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insert sample products
+INSERT INTO sales.products (product_code, product_name, category, subcategory, brand, unit_price, cost_price, weight_kg, stock_quantity, is_active, launch_date) VALUES
+('PROD001', 'Premium Laptop 15"', 'Electronics', 'Computers', 'TechBrand', 1299.99, 899.99, 2.1, 25, TRUE, '2023-01-15'),
+('PROD002', 'Wireless Mouse', 'Electronics', 'Accessories', 'TechBrand', 29.99, 15.99, 0.15, 150, TRUE, '2023-02-01'),
+('PROD003', 'Ergonomic Keyboard', 'Electronics', 'Accessories', 'TechBrand', 89.99, 49.99, 0.8, 75, TRUE, '2023-02-15'),
+('PROD004', 'Gaming Monitor 27"', 'Electronics', 'Monitors', 'DisplayPro', 399.99, 249.99, 6.5, 40, TRUE, '2023-03-01'),
+('PROD005', 'Office Chair', 'Furniture', 'Seating', 'ComfortPlus', 199.99, 119.99, 18.5, 30, TRUE, '2023-01-10');
+
+-- ==========================================
+-- ORDERS TABLE (Incremental Load Example)
+-- ==========================================
+
+CREATE TABLE IF NOT EXISTS sales.orders (
+    order_id SERIAL PRIMARY KEY,
+    order_number VARCHAR(20) UNIQUE NOT NULL,
+    customer_id INTEGER REFERENCES public.customers(customer_id),
+    order_date DATE NOT NULL,
+    order_time TIME DEFAULT CURRENT_TIME,
+    ship_date DATE,
+    delivery_date DATE,
+    order_status VARCHAR(20) DEFAULT 'Pending',
+    payment_method VARCHAR(50),
+    payment_status VARCHAR(20) DEFAULT 'Pending',
+    subtotal DECIMAL(12,2) NOT NULL,
+    tax_amount DECIMAL(12,2) DEFAULT 0.00,
+    shipping_cost DECIMAL(10,2) DEFAULT 0.00,
+    discount_amount DECIMAL(10,2) DEFAULT 0.00,
+    total_amount DECIMAL(12,2) NOT NULL,
+    shipping_address TEXT,
+    billing_address TEXT,
+    sales_rep_id INTEGER,
+    channel VARCHAR(20) DEFAULT 'Online',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insert sample orders
+INSERT INTO sales.orders (order_number, customer_id, order_date, order_status, payment_method, payment_status, subtotal, tax_amount, shipping_cost, total_amount, channel) VALUES
+('ORD001001', 1, CURRENT_DATE - INTERVAL '30 days', 'Delivered', 'Credit Card', 'Paid', 1299.99, 103.99, 15.00, 1418.98, 'Online'),
+('ORD001002', 2, CURRENT_DATE - INTERVAL '25 days', 'Delivered', 'PayPal', 'Paid', 119.98, 9.60, 10.00, 139.58, 'Online'),
+('ORD001003', 3, CURRENT_DATE - INTERVAL '20 days', 'Shipped', 'Credit Card', 'Paid', 489.98, 39.20, 20.00, 549.18, 'Phone'),
+('ORD001004', 4, CURRENT_DATE - INTERVAL '15 days', 'Processing', 'Bank Transfer', 'Pending', 199.99, 16.00, 25.00, 240.99, 'Store'),
+('ORD001005', 5, CURRENT_DATE - INTERVAL '10 days', 'Delivered', 'Credit Card', 'Paid', 29.99, 2.40, 5.00, 37.39, 'Online');
+
+-- ==========================================
+-- ORDER ITEMS TABLE
+-- ==========================================
+
+CREATE TABLE IF NOT EXISTS sales.order_items (
+    order_item_id SERIAL PRIMARY KEY,
+    order_id INTEGER REFERENCES sales.orders(order_id),
+    product_id INTEGER REFERENCES sales.products(product_id),
+    quantity INTEGER NOT NULL DEFAULT 1,
+    unit_price DECIMAL(10,2) NOT NULL,
+    discount_percent DECIMAL(5,2) DEFAULT 0.00,
+    line_total DECIMAL(12,2) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insert sample order items
+INSERT INTO sales.order_items (order_id, product_id, quantity, unit_price, line_total) VALUES
+(1, 1, 1, 1299.99, 1299.99),
+(2, 2, 2, 29.99, 59.98),
+(2, 3, 1, 89.99, 89.99),
+(3, 4, 1, 399.99, 399.99),
+(3, 3, 1, 89.99, 89.99),
+(4, 5, 1, 199.99, 199.99),
+(5, 2, 1, 29.99, 29.99);
+
+-- ==========================================
+-- EMPLOYEES TABLE (HR Schema)
+-- ==========================================
+
+CREATE TABLE IF NOT EXISTS hr.employees (
+    employee_id SERIAL PRIMARY KEY,
+    employee_code VARCHAR(20) UNIQUE NOT NULL,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    email VARCHAR(255) UNIQUE,
+    phone VARCHAR(20),
+    hire_date DATE NOT NULL,
+    job_title VARCHAR(100),
+    department VARCHAR(100),
+    manager_id INTEGER REFERENCES hr.employees(employee_id),
+    salary DECIMAL(12,2),
+    commission_rate DECIMAL(5,4),
+    status VARCHAR(20) DEFAULT 'Active',
+    address TEXT,
+    date_of_birth DATE,
+    emergency_contact_name VARCHAR(200),
+    emergency_contact_phone VARCHAR(20),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insert sample employees
+INSERT INTO hr.employees (employee_code, first_name, last_name, email, phone, hire_date, job_title, department, salary, status) VALUES
+('EMP001', 'Robert', 'Manager', 'robert.manager@company.com', '+1-555-1001', '2020-01-15', 'Sales Manager', 'Sales', 75000.00, 'Active'),
+('EMP002', 'Lisa', 'Associate', 'lisa.associate@company.com', '+1-555-1002', '2021-03-10', 'Sales Associate', 'Sales', 45000.00, 'Active'),
+('EMP003', 'Tom', 'Analyst', 'tom.analyst@company.com', '+1-555-1003', '2022-06-01', 'Data Analyst', 'IT', 65000.00, 'Active'),
+('EMP004', 'Emma', 'Coordinator', 'emma.coordinator@company.com', '+1-555-1004', '2021-11-20', 'HR Coordinator', 'Human Resources', 55000.00, 'Active'),
+('EMP005', 'James', 'Specialist', 'james.specialist@company.com', '+1-555-1005', '2023-02-14', 'Finance Specialist', 'Finance', 60000.00, 'Active');
+
+-- ==========================================
+-- FINANCIAL TRANSACTIONS (Finance Schema)
+-- ==========================================
+
+CREATE TABLE IF NOT EXISTS finance.transactions (
+    transaction_id SERIAL PRIMARY KEY,
+    transaction_number VARCHAR(20) UNIQUE NOT NULL,
+    transaction_date DATE NOT NULL,
+    transaction_type VARCHAR(50) NOT NULL,
+    account_code VARCHAR(20),
+    account_name VARCHAR(255),
+    debit_amount DECIMAL(15,2) DEFAULT 0.00,
+    credit_amount DECIMAL(15,2) DEFAULT 0.00,
+    description TEXT,
+    reference_number VARCHAR(50),
+    customer_id INTEGER,
+    vendor_id INTEGER,
+    project_id INTEGER,
+    department VARCHAR(100),
+    created_by INTEGER,
+    approved_by INTEGER,
+    approval_date DATE,
+    status VARCHAR(20) DEFAULT 'Pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insert sample transactions
+INSERT INTO finance.transactions (transaction_number, transaction_date, transaction_type, account_code, account_name, debit_amount, credit_amount, description, status) VALUES
+('TXN001001', CURRENT_DATE - INTERVAL '5 days', 'Revenue', 'REV001', 'Product Sales', 0.00, 1418.98, 'Sale - Order ORD001001', 'Approved'),
+('TXN001002', CURRENT_DATE - INTERVAL '4 days', 'Expense', 'EXP001', 'Cost of Goods Sold', 899.99, 0.00, 'COGS - Order ORD001001', 'Approved'),
+('TXN001003', CURRENT_DATE - INTERVAL '3 days', 'Revenue', 'REV001', 'Product Sales', 0.00, 139.58, 'Sale - Order ORD001002', 'Approved'),
+('TXN001004', CURRENT_DATE - INTERVAL '2 days', 'Expense', 'EXP002', 'Marketing', 2500.00, 0.00, 'Online advertising campaign', 'Pending'),
+('TXN001005', CURRENT_DATE - INTERVAL '1 day', 'Expense', 'EXP003', 'Payroll', 15000.00, 0.00, 'Monthly payroll', 'Approved');
+
+-- ==========================================
+-- CREATE INDEXES FOR PERFORMANCE
+-- ==========================================
+
+-- Customer indexes
+CREATE INDEX IF NOT EXISTS idx_customers_email ON public.customers(email);
+CREATE INDEX IF NOT EXISTS idx_customers_updated_at ON public.customers(updated_at);
+CREATE INDEX IF NOT EXISTS idx_customers_status ON public.customers(status);
+
+-- Product indexes
+CREATE INDEX IF NOT EXISTS idx_products_category ON sales.products(category);
+CREATE INDEX IF NOT EXISTS idx_products_updated_at ON sales.products(updated_at);
+CREATE INDEX IF NOT EXISTS idx_products_active ON sales.products(is_active);
+
+-- Order indexes
+CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON sales.orders(customer_id);
+CREATE INDEX IF NOT EXISTS idx_orders_date ON sales.orders(order_date);
+CREATE INDEX IF NOT EXISTS idx_orders_updated_at ON sales.orders(updated_at);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON sales.orders(order_status);
+
+-- Employee indexes
+CREATE INDEX IF NOT EXISTS idx_employees_department ON hr.employees(department);
+CREATE INDEX IF NOT EXISTS idx_employees_updated_at ON hr.employees(updated_at);
+CREATE INDEX IF NOT EXISTS idx_employees_status ON hr.employees(status);
+
+-- Transaction indexes
+CREATE INDEX IF NOT EXISTS idx_transactions_date ON finance.transactions(transaction_date);
+CREATE INDEX IF NOT EXISTS idx_transactions_type ON finance.transactions(transaction_type);
+CREATE INDEX IF NOT EXISTS idx_transactions_updated_at ON finance.transactions(updated_at);
+
+-- ==========================================
+-- CREATE VIEWS FOR COMMON QUERIES
+-- ==========================================
+
+-- Customer summary view
+CREATE OR REPLACE VIEW public.customer_summary AS
+SELECT 
+    customer_id,
+    customer_code,
+    CONCAT(first_name, ' ', last_name) AS full_name,
+    email,
+    customer_type,
+    status,
+    credit_limit,
+    registration_date,
+    COALESCE(order_stats.total_orders, 0) AS total_orders,
+    COALESCE(order_stats.total_spent, 0.00) AS total_spent,
+    COALESCE(order_stats.last_order_date, registration_date) AS last_order_date
+FROM public.customers c
+LEFT JOIN (
+    SELECT 
+        customer_id,
+        COUNT(*) AS total_orders,
+        SUM(total_amount) AS total_spent,
+        MAX(order_date) AS last_order_date
+    FROM sales.orders 
+    GROUP BY customer_id
+) order_stats ON c.customer_id = order_stats.customer_id;
+
+-- Product performance view
+CREATE OR REPLACE VIEW sales.product_performance AS
+SELECT 
+    p.product_id,
+    p.product_code,
+    p.product_name,
+    p.category,
+    p.unit_price,
+    p.stock_quantity,
+    COALESCE(sales_stats.units_sold, 0) AS units_sold,
+    COALESCE(sales_stats.revenue, 0.00) AS revenue,
+    COALESCE(sales_stats.orders_count, 0) AS orders_count
+FROM sales.products p
+LEFT JOIN (
+    SELECT 
+        oi.product_id,
+        SUM(oi.quantity) AS units_sold,
+        SUM(oi.line_total) AS revenue,
+        COUNT(DISTINCT oi.order_id) AS orders_count
+    FROM sales.order_items oi
+    JOIN sales.orders o ON oi.order_id = o.order_id
+    WHERE o.order_status IN ('Delivered', 'Shipped')
+    GROUP BY oi.product_id
+) sales_stats ON p.product_id = sales_stats.product_id;
+
+-- ==========================================
+-- UPDATE TIMESTAMPS (Simulate Data Changes)
+-- ==========================================
+
+-- Function to update the updated_at timestamp
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- Create triggers for updated_at
+CREATE TRIGGER update_customers_updated_at BEFORE UPDATE ON public.customers FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_products_updated_at BEFORE UPDATE ON sales.products FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_orders_updated_at BEFORE UPDATE ON sales.orders FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_employees_updated_at BEFORE UPDATE ON hr.employees FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_transactions_updated_at BEFORE UPDATE ON finance.transactions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ==========================================
+-- GRANT PERMISSIONS
+-- ==========================================
+
+-- Grant permissions to etl_user
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO etl_user;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA sales TO etl_user;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA hr TO etl_user;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA finance TO etl_user;
+
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO etl_user;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA sales TO etl_user;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA hr TO etl_user;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA finance TO etl_user;
+
+-- ==========================================
+-- ANALYSIS & REPORTING QUERIES
+-- ==========================================
+
+-- Sample queries that can be used for testing
+
+-- 1. Daily sales summary
+-- SELECT order_date, COUNT(*) as order_count, SUM(total_amount) as daily_revenue
+-- FROM sales.orders 
+-- WHERE order_date >= CURRENT_DATE - INTERVAL '30 days'
+-- GROUP BY order_date 
+-- ORDER BY order_date DESC;
+
+-- 2. Top customers by revenue
+-- SELECT * FROM public.customer_summary 
+-- ORDER BY total_spent DESC 
+-- LIMIT 10;
+
+-- 3. Product performance
+-- SELECT * FROM sales.product_performance 
+-- ORDER BY revenue DESC 
+-- LIMIT 10;
+
+-- 4. Department headcount and salary costs
+-- SELECT department, COUNT(*) as headcount, AVG(salary) as avg_salary, SUM(salary) as total_cost
+-- FROM hr.employees 
+-- WHERE status = 'Active'
+-- GROUP BY department 
+-- ORDER BY total_cost DESC;
+
+COMMIT;
